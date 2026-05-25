@@ -1,0 +1,465 @@
+---
+title: "Text as Data Workshop"
+author: "Siefken"
+date: "2026-05-25"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    number_sections: true
+subtitle: SCISS Sharjah 2026
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+---
+
+# Setup
+
+## Load Packages
+
+```{r install-packages, eval=FALSE}
+install.packages("pacman")
+```
+
+```{r load-packages}
+library(pacman)
+
+p_load(tidyverse,
+       quanteda,
+       quanteda.textmodels,
+       quanteda.textplots,
+       quanteda.textstats,
+       stm,
+       devtools,
+       SnowballC)
+```
+
+## Install & Load Additional Packages from GitHub
+
+Download Presidential Debate Dataset from Github (Martherus 2020; <https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3611815>)
+
+```{r install-github-packages, eval=FALSE}
+devtools::install_github("jamesmartherus/debates")
+devtools::install_github("kbenoit/quanteda.dictionaries")
+devtools::install_github("quanteda/quanteda.sentiment")
+```
+
+```{r load-extra-packages}
+library("quanteda.sentiment")
+library("quanteda.dictionaries")
+library(debates)
+```
+
+## Load the Data
+
+```{r load-data}
+data(debate_transcripts)
+```
+
+---
+
+# Data Pre-Processing
+
+```{r preprocessing}
+debates <- debate_transcripts %>% 
+  filter(candidate == 1) %>% #Only include candidates
+  filter(election_year >= 2000, type == "Pres") %>% #Limit the data
+  group_by(speaker, date) %>%
+  summarise(text = paste(text, collapse = " "), #Merge all speeches per candidate and day into one text
+            election_year = first(election_year), #Needed to keep the meta data
+            type = first(type),
+            .groups = "drop") %>%
+  mutate(doc_id = row_number())
+```
+
+## Create Corpus
+
+```{r create-corpus}
+corpus_debate <- corpus(debates,
+                      text_field = "text",
+                      docid_field = "doc_id")
+```
+
+## Overview of the Data
+
+```{r corpus-summary}
+summary_debate <- summary(corpus_debate, n = ndoc(corpus_debate)) #By default, summary only shows the first 100 rows
+```
+
+```{r view-corpus-summary, eval=FALSE}
+View(summary_debate)
+```
+
+```{r plot-tokens}
+summary_debate %>%
+  ggplot(aes(x = speaker, y = Tokens)) +
+  geom_boxplot(aes(fill = speaker), alpha = .7) +
+  theme_bw()
+```
+
+## Subsetting the Corpus
+
+```{r subset-corpus}
+corpus_obama <- corpus_subset(corpus_debate, 
+                              speaker == "Barack Obama")
+```
+
+---
+
+# Document Feature Matrix
+
+Turn dataset into a DFM, required for e.g. Dictionary Analysis.
+
+```{r create-dfm}
+dfm_debate <- corpus_debate %>%
+  tokens(
+    remove_punct = TRUE,
+    remove_numbers = TRUE,
+    split_hyphens = TRUE
+  ) %>%
+  tokens_wordstem(
+    language = quanteda_options("language_stemmer"),
+    verbose = quanteda_options("verbose")
+  ) %>%
+  tokens_remove(c("example1", "example2", stopwords("en"))) %>% #Remove specified words
+  dfm()
+```
+
+## Trim Infrequent Features
+
+```{r trim-dfm}
+dfm_debate_trim <- dfm_trim(dfm_debate, 
+                          min_docfreq = 2, #Has to appear in at least two texts
+                          min_termfreq = 5) #Has to appear at least 5 times total
+
+nfeat(dfm_debate_trim) #Number of unique words in the data
+```
+
+## Inspect the DFM
+
+```{r view-dfm, eval=FALSE}
+View(convert(dfm_debate, to = "data.frame"))
+```
+
+---
+
+# Analyse the DFM
+
+## Top 20 Features (Overall)
+
+```{r top-features}
+top20_feat <- textstat_frequency(dfm_debate_trim, n = 20)
+```
+
+```{r view-top-features, eval=FALSE}
+View(top20_feat)
+```
+
+## Top 20 Features by Speaker
+
+```{r top-features-by-speaker}
+docvars(dfm_debate_trim)
+
+top20_feat_president <- textstat_frequency(dfm_debate_trim, 
+                                 n = 20,
+                                 group = docvars(dfm_debate_trim, "speaker"))
+```
+
+```{r view-top-features-by-speaker, eval=FALSE}
+View(top20_feat_president)
+```
+
+---
+
+# Wordclouds
+
+```{r wordcloud-basic}
+textplot_wordcloud(dfm_debate_trim)
+```
+
+```{r wordcloud-custom}
+textplot_wordcloud(dfm_debate_trim,
+                   max_words = 50,
+                   color = "red",
+                   rotation = 0)
+```
+
+---
+
+# Keyness Analysis
+
+Keyness analysis determines which words are used more by a predetermined group than by the other groups. E.g. which words are used more by Trump than other candidates.
+
+```{r keyness}
+#Lets group the DFM by Candidates
+dfm_debate_grouped <- dfm_debate_trim %>%
+  dfm_group(groups = docvars(dfm_debate_trim, "speaker"))
+
+keyness_trump <- textstat_keyness(dfm_debate_grouped, target = "Donald Trump")
+
+textplot_keyness(keyness_trump,
+                 show_reference = FALSE,
+                 n = 25)
+```
+
+---
+
+# Dictionary Analysis
+
+## Create a Custom Dictionary
+
+Note: As we used stemming on our data, the dictionary should also contain stemmed words.
+
+```{r stemming-example}
+wordStem("integration", language = "en")
+```
+
+```{r create-dictionary}
+list_dict <- list(
+  economy = c("economi", "job", "employ", "gdp", "growth", "budget", "deficit", "debt"),
+  healthcare = c("health", "medicaid", "medicar", "insur", "hospit", "doctor", "patient"),
+  education = c("educ", "school", "teacher", "student", "colleg", "univers", "tuition"),
+  environment = c("climat", "environ", "energi", " green", "emiss", "renew", "pollut"),
+  immigration = c("immigr", "border", "citizen", "visa", "migrant", "deport"),
+  foreign_policy = c("foreign", "diplomat", "diplomaci", "allianc", "nato", "trade", "tariff", "sanction"),
+  social_security = c("retir", "pension", "senior", "elder", "social secur"),
+  crime = c("crime", "crimin", "polic", "justic", "prison", "law")
+)
+
+topic_dict <- dictionary(list_dict)
+```
+
+## Apply the Dictionary
+
+```{r apply-dictionary}
+topic_counts <- dfm_lookup(dfm_debate_trim,
+                           topic_dict)
+
+df_topic_counts <- convert(topic_counts,
+                           to = "data.frame")
+
+df_topic_counts <- cbind(docvars(dfm_debate_trim), df_topic_counts) #Merge meta info back on the dataset
+```
+
+## Summarise by Speaker
+
+```{r summarise-topics}
+df_topic_counts %>%
+  group_by(speaker) %>%
+  summarise(mean_immigration = mean(immigration),
+            mean_economy = mean(economy),
+            mean_environment = mean(environment),
+            mean_crime = mean(crime))
+```
+
+---
+
+# Sentiment Analysis
+
+Sentiment Dictionary from the `quanteda.sentiment` package (Benoit, <https://github.com/quanteda/quanteda.sentiment>).
+
+For this example, we will use the Lexicoder Sentiment Dictionary by Young & Soroka (2012).
+
+```{r view-sentiment-dict, eval=FALSE}
+View(data_dictionary_LSD2015)
+View(list_dict)
+```
+
+```{r sentiment-analysis}
+debate_sent <- dfm_lookup(dfm_debate_trim,
+                        data_dictionary_LSD2015)
+
+debate_sent_df <- convert(debate_sent,
+                           to = "data.frame")
+
+debate_sent_df <- cbind(docvars(dfm_debate_trim),
+                      debate_sent_df)
+
+debate_sent_df <- debate_sent_df %>%
+  mutate(sentiment_score = (positive - negative)/(positive+negative),
+         perc_pos = positive/(positive+negative),
+         perc_neg = negative/(positive+negative))
+```
+
+```{r view-sentiment-df, eval=FALSE}
+View(debate_sent_df)
+```
+
+## Visualise Sentiment Over Time
+
+```{r plot-sentiment-score}
+ggplot(debate_sent_df, aes(x = date, y = sentiment_score)) +
+  geom_point() +
+  geom_smooth()
+```
+
+```{r plot-positive}
+ggplot(debate_sent_df, aes(x = date, y = perc_pos)) +
+  geom_point() +
+  geom_smooth()
+```
+
+```{r plot-negative}
+ggplot(debate_sent_df, aes(x = date, y = perc_neg)) +
+  geom_point() +
+  geom_smooth()
+```
+
+---
+
+# Topic Models
+
+For this, we will use the STM package (Roberts 2025, <https://cran.r-project.org/web/packages/stm/index.html>).
+
+```{r stm-convert}
+dfm_stm <- convert(dfm_debate_trim, to = "stm", docvars(dfm_debate_trim))
+```
+
+## Fit the STM Model
+
+Now we specify how many topics we expect within the data by defining `K`. We tell STM to run only 50 iterations max — skip this argument in a real analysis.
+
+```{r stm-model,results='hide'}
+stm_model <- stm(documents = dfm_stm$documents,
+                 vocab = dfm_stm$vocab,
+                 K = 6,
+                 prevalence = ~ stm::s(election_year), #We allow the prevalence of topics to vary by year and speaker
+                 max.em.its = 50,
+                 data = dfm_stm$meta,
+                 seed = 26052026)
+```
+
+## Inspect Topics
+
+Common rule: Look at the FREX words as the most frequent and exclusive words per topic.
+
+```{r label-topics}
+labelTopics(stm_model)
+
+topic_labels <- c("2016 Debate",
+                  "Social Policy",
+                  "Other Candidates",
+                  "Iraq War",
+                  "Tax & Labor",
+                  "Foreign Policy")
+```
+
+## Plot Topic Model Results
+
+```{r stm-plot-summary}
+plot(stm_model, type = "summary",
+     labeltype = "frex",
+     custom.labels = topic_labels)
+```
+
+```{r stm-plot-hist}
+plot(stm_model, type = "hist",
+     labeltype = "frex",
+     custom.labels = topic_labels)
+```
+
+## Estimate Effects
+
+```{r estimate-effects}
+prep <- estimateEffect(~ stm::s(election_year),
+                       stm_model,
+                       meta = dfm_stm$meta)
+
+par(mfrow = c(1,1))
+plot(prep, covariate = "election_year", 
+     topics = 1:6,
+     model = stm_model,
+     method = "continuous",
+     xlab = "Election Year",
+     custom.labels = topic_labels,
+     labeltype = "custom")
+```
+
+---
+
+# Wordfish
+
+```{r wordfish}
+wfish <- textmodel_wordfish(dfm_debate_trim)
+```
+
+## Plot Document Positions
+
+```{r wordfish-documents}
+textplot_scale1d(wfish, margin = "documents")
+```
+
+## Plot Feature Positions
+
+```{r wordfish-features}
+textplot_scale1d(wfish, margin = "features")
+```
+
+## Save Theta Scores
+
+```{r wordfish-save}
+docvars(dfm_debate_trim, "theta") <- wfish$theta
+```
+
+---
+
+# Wordscores
+
+We pre-define one text by each Democrat candidate as `1` and for Republicans as `-1`.
+
+```{r wordscores}
+dfm_debate_trim$refvalue <- c(1,rep(NA,2), #Al Gore
+                              1,rep(NA,5), #Obama
+                              -1,rep(NA,4),#Trump
+                              -1,rep(NA,5),#Bush
+                              1,rep(NA,2), #Hillary
+                              1,NA,        #Biden
+                              1,rep(NA,2), #Kerry
+                              -1,rep(NA,2),#McCain
+                              -1,rep(NA,2))#Romney
+
+wscore <- textmodel_wordscores(dfm_debate_trim, dfm_debate_trim$refvalue)
+
+lbg <- predict(wscore, se.fit = TRUE,
+               interval = "confidence",
+               rescaling = "lbg")
+```
+
+## Visualise Scores per Text
+
+```{r wordscores-plot}
+textplot_scale1d(lbg,
+                margin = "documents",
+                groups = dfm_debate_trim$speaker)
+```
+
+## Save and Plot Wordscores Positions
+
+```{r wordscores-save-plot}
+positions_ws <- lbg$fit %>% as.data.frame()
+
+docvars(dfm_debate_trim) <- bind_cols(docvars(dfm_debate_trim),
+                                    positions_ws)
+
+ggplot(docvars(dfm_debate_trim), 
+       aes(x = fit,
+           y = reorder(paste(speaker, date), fit))) +
+  geom_point()
+```
+
+---
+
+*Thank you for your attention!*
